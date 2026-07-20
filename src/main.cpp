@@ -40,7 +40,7 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
 #define LINKAGE_RATIO 2
  
 // Hardware safety limit - NOT exposed to the web UI on purpose.
-#define GIMBAL_MAX_SAFE 5.0
+#define GIMBAL_MAX_SAFE 17.0
  
 int angleToPulse(float angle) {
   return (int)((angle) * (SERVO_MAX - SERVO_MIN) / 180.0 + SERVO_MIN);
@@ -63,13 +63,13 @@ float yawAngle = 0;
 unsigned long lastTime = 0;
  
 // --- PID gains - live-adjustable via the web dashboard ---
-float Kp_pitch = 1.0;
-float Ki_pitch = 0.0;
-float Kd_pitch = 0.0;
+float Kp_pitch = -1.8;
+float Ki_pitch = 0.02;
+float Kd_pitch = 0.0005;
  
-float Kp_yaw = -1.0;
-float Ki_yaw = 0.0;
-float Kd_yaw = 0.0;
+float Kp_yaw = 1.8;
+float Ki_yaw = 0.02;
+float Kd_yaw = 0.0003;
  
 float pitchIntegral = 0, pitchLastError = 0;
 float yawIntegral = 0, yawLastError = 0;
@@ -261,7 +261,7 @@ void loop() {
   float gyroPitchRate = (g.gyro.z - GYRO_Z_OFFSET) * 180.0 / PI;
   float gyroYawRate   = (g.gyro.y - GYRO_Y_OFFSET) * 180.0 / PI;
  
-  pitchAngle = 0.98 * (pitchAngle + gyroPitchRate * dt) + 0.02 * accelPitch;
+  pitchAngle = .998 * (pitchAngle + gyroPitchRate * dt) + 0.002 * accelPitch;
   yawAngle   = 0.98 * (yawAngle   + gyroYawRate   * dt) + 0.02 * accelYaw;
  
   float pitchCorrection = computePID(0, pitchAngle, pitchIntegral,
