@@ -36,6 +36,11 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
 #define SERVO_MAX 600
 #define SERVO_FREQ 50
 #define SERVO_CENTER 90
+
+#define FAN_PIN 17
+#define FAN_PWM_FREQ 25000
+#define FAN_PWM_RESOLUTION 8
+#define FAN_SPEED 200 // 0 to 255 range
  
 #define LINKAGE_RATIO 2
  
@@ -150,6 +155,12 @@ void setup() {
   Wire.begin(SDA_PIN, SCL_PIN);
  
   pwm.begin();
+
+  ledcSetup(1, FAN_PWM_FREQ, FAN_PWM_RESOLUTION); // using channel 1 for distinction between servos
+  ledcAttachPin(FAN_PIN, 1);
+  ledcWrite(1, FAN_SPEED);
+  Serial.println("Fan PWM initialized!");
+
   pwm.setPWMFreq(SERVO_FREQ);
   delay(10);
   pwm.setPWM(PITCH_CH, 0, angleToPulse(SERVO_CENTER));
