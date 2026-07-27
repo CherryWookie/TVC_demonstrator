@@ -1,23 +1,26 @@
-// ============================================================
-// Step 5: PID stabilization + WiFi live tuning dashboard
-// Same control loop as before, now with a small async web server
-// so you can adjust Kp/Ki/Kd for both axes live, no reflashing.
-//
-// Fill in WIFI_SSID / WIFI_PASSWORD below before uploading.
-// Once running, check Serial Monitor for the ESP32's IP address,
-// then open that address in a browser on the same network.
-//
-// GIMBAL_MAX_SAFE stays a hard-coded constant, NOT web-adjustable -
-// that is a hardware safety limit and shouldn't be changeable
-// remotely/accidentally.
-// ============================================================
 
+// ============================================================
+// TVC Gimbal - Closed-loop PID stabilization + WiFi live tuning
+// Now using MPU6050_light instead of Adafruit_MPU6050 (generic
+// board wasn't passing the Adafruit library's identity check).
+//
+// STATUS: integration test only - sensor is sitting flat on the
+// desk, NOT yet in its final mounted position. Axis assignment
+// below (pitch=X, yaw=Y) is a PLACEHOLDER. Once mounted, redo the
+// raw-axis rotation test and update accordingly, same process as
+// every previous remount.
+//
+// Units: this library returns accel in g (not m/s^2) and gyro
+// directly in deg/s (not rad/s) - motion gate threshold updated
+// to compare against 1.0, not 9.81.
+// ============================================================
+ 
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
+#include <MPU6050_light.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+ 
 
 // --- WiFi credentials - fill these in ---
 const char* WIFI_SSID = "Slower 2.4";
@@ -36,38 +39,35 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
 #define SERVO_MAX 600
 #define SERVO_FREQ 50
 #define SERVO_CENTER 90
-
-#define FAN_PIN 17
-#define FAN_PWM_FREQ 25000
-#define FAN_PWM_RESOLUTION 8
-#define FAN_SPEED 200 // 0 to 255 range
  
 #define LINKAGE_RATIO 2
- 
-// Hardware safety limit - NOT exposed to the web UI on purpose.
 #define GIMBAL_MAX_SAFE 17.0
+ 
+#define FAN_PIN 26
+#define FAN_PWM_FREQ 25000
+#define FAN_PWM_RESOLUTION 8
+#define FAN_SPEED 200
  
 int angleToPulse(float angle) {
   return (int)((angle) * (SERVO_MAX - SERVO_MIN) / 180.0 + SERVO_MIN);
 }
  
-Adafruit_MPU6050 mpu;
+MPU6050 mpu(Wire);
  
-// --- Accelerometer offsets (measured, real hardware) ---
-#define X_OFFSET 0.1151
-#define Y_OFFSET 0.9027
-#define Z_OFFSET 1.8392
+// --- Accelerometer offsets (units: g) - PLACEHOLDER, flat on desk ---
+#define X_OFFSET 0.0221
+#define Y_OFFSET 0.0322
+#define Z_OFFSET 0.1244
  
-// --- Gyroscope zero-rate offsets (same calibration run) ---
-#define GYRO_X_OFFSET 0.0149
-#define GYRO_Y_OFFSET 0.0135
-#define GYRO_Z_OFFSET -0.0346
+// --- Gyroscope zero-rate offsets (units: deg/s) ---
+#define GYRO_X_OFFSET 0.4163
+#define GYRO_Y_OFFSET 1.7458
+#define GYRO_Z_OFFSET 0.7683
  
 float pitchAngle = 0;
 float yawAngle = 0;
 unsigned long lastTime = 0;
  
-// --- PID gains - live-adjustable via the web dashboard ---
 float Kp_pitch = -1.8;
 float Ki_pitch = 0.02;
 float Kd_pitch = 0.0005;
@@ -81,7 +81,6 @@ float yawIntegral = 0, yawLastError = 0;
  
 #define INTEGRAL_LIMIT 20.0
  
-// --- Live telemetry, updated every loop, read by the /data endpoint ---
 float telemetry_pitch = 0, telemetry_yaw = 0;
 float telemetry_pitchCorrection = 0, telemetry_yawCorrection = 0;
 float telemetry_pitchServo = 90, telemetry_yawServo = 90;
@@ -150,40 +149,37 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
  
 void setup() {
   Serial.begin(115200);
-  Serial.println("=== TVC Gimbal PID + WiFi dashboard (build: MAIN-1) ===");
+  Serial.println("=== TVC Gimbal PID + WiFi dashboard (build: MAIN-2, MPU6050_light) ===");
  
   Wire.begin(SDA_PIN, SCL_PIN);
  
   pwm.begin();
-
-  ledcSetup(1, FAN_PWM_FREQ, FAN_PWM_RESOLUTION); // using channel 1 for distinction between servos
-  ledcAttachPin(FAN_PIN, 1);
-  ledcWrite(1, FAN_SPEED);
-  Serial.println("Fan PWM initialized!");
-
   pwm.setPWMFreq(SERVO_FREQ);
   delay(10);
   pwm.setPWM(PITCH_CH, 0, angleToPulse(SERVO_CENTER));
   pwm.setPWM(YAW_CH,   0, angleToPulse(SERVO_CENTER));
   Serial.println("Servos centered.");
  
-  if (!mpu.begin()) {
+  ledcSetup(1, FAN_PWM_FREQ, FAN_PWM_RESOLUTION);
+  ledcAttachPin(FAN_PIN, 1);
+  ledcWrite(1, FAN_SPEED);
+  Serial.println("Fan initialized.");
+ 
+  byte status = mpu.begin();
+  Serial.print("MPU6050 status: "); Serial.println(status);
+  if (status != 0) {
     Serial.println("MPU6050 not found!");
     while (1) { delay(10); }
   }
   Serial.println("MPU6050 found and initialized.");
  
-  mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
-  mpu.setGyroRange(MPU6050_RANGE_1000_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
- 
-  sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);
-  float ax = a.acceleration.x - X_OFFSET;
-  float ay = a.acceleration.y - Y_OFFSET;
-  float az = a.acceleration.z - Z_OFFSET;
-  pitchAngle = atan2(ay, sqrt(ax * ax + az * az)) * 180.0 / PI;
-  yawAngle   = atan2(az, sqrt(ax * ax + ay * ay)) * 180.0 / PI;
+  mpu.fetchData();
+  float ax = mpu.getAccX() - X_OFFSET;
+  float ay = mpu.getAccY() - Y_OFFSET;
+  float az = mpu.getAccZ() - Z_OFFSET;
+  // PLACEHOLDER axis assignment - pitch=X, yaw=Y - re-derive once mounted.
+  pitchAngle = atan2(ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
+  yawAngle   = atan2(ay, sqrt(ax * ax + az * az)) * 180.0 / PI;
  
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to WiFi");
@@ -255,25 +251,34 @@ float computePID(float setpoint, float measured, float &integral,
 }
  
 void loop() {
-  sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);
+  mpu.fetchData();
  
-  float ax = a.acceleration.x - X_OFFSET;
-  float ay = a.acceleration.y - Y_OFFSET;
-  float az = a.acceleration.z - Z_OFFSET;
+  float ax = mpu.getAccX() - X_OFFSET;
+  float ay = mpu.getAccY() - Y_OFFSET;
+  float az = mpu.getAccZ() - Z_OFFSET;
  
-  float accelPitch = atan2(ay, sqrt(ax * ax + az * az)) * 180.0 / PI;
-  float accelYaw   = atan2(az, sqrt(ax * ax + ay * ay)) * 180.0 / PI;
+  // PLACEHOLDER axis assignment - pitch=X, yaw=Y - re-derive once mounted.
+  float accelPitch = atan2(ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
+  float accelYaw   = atan2(ay, sqrt(ax * ax + az * az)) * 180.0 / PI;
  
   unsigned long now = millis();
   float dt = (now - lastTime) / 1000.0;
   lastTime = now;
  
-  float gyroPitchRate = (g.gyro.z - GYRO_Z_OFFSET) * 180.0 / PI;
-  float gyroYawRate   = (g.gyro.y - GYRO_Y_OFFSET) * 180.0 / PI;
+  // Gyro already in deg/s from this library - no *180/PI conversion needed.
+  float gyroPitchRate = mpu.getGyroX() - GYRO_X_OFFSET;
+  float gyroYawRate   = mpu.getGyroY() - GYRO_Y_OFFSET;
  
-  pitchAngle = .998 * (pitchAngle + gyroPitchRate * dt) + 0.002 * accelPitch;
-  yawAngle   = 0.98 * (yawAngle   + gyroYawRate   * dt) + 0.02 * accelYaw;
+  // --- Motion gate --- units are g now, so compare against 1.0, not 9.81.
+  float accelMagnitude = sqrt(ax * ax + ay * ay + az * az);
+  bool isStationary = (fabs(accelMagnitude - 1.0) < 0.05); // tune if needed
+ 
+  if (isStationary) {
+    pitchAngle = 0.95 * (pitchAngle + gyroPitchRate * dt) + 0.05 * accelPitch;
+  } else {
+    pitchAngle = pitchAngle + gyroPitchRate * dt;
+  }
+  yawAngle = 0.98 * (yawAngle + gyroYawRate * dt) + 0.02 * accelYaw;
  
   float pitchCorrection = computePID(0, pitchAngle, pitchIntegral,
                                       pitchLastError, dt,
