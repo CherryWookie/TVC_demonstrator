@@ -43,7 +43,7 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
 #define LINKAGE_RATIO 2
 #define GIMBAL_MAX_SAFE 17.0
  
-#define FAN_PIN 26
+#define FAN_PIN 17
 #define FAN_PWM_FREQ 25000
 #define FAN_PWM_RESOLUTION 8
 #define FAN_SPEED 200
