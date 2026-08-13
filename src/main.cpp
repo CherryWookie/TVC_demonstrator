@@ -40,7 +40,7 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
 #define SERVO_CENTER 90
 
 #define LINKAGE_RATIO 2
-#define GIMBAL_MAX_SAFE 17.0
+#define GIMBAL_MAX_SAFE 20.0
 
 #define FAN_PIN 17
 #define FAN_PWM_FREQ 25000
@@ -53,12 +53,13 @@ int angleToPulse(float angle) {
 
 MPU6050 mpu(Wire);
 
-#define ACCEL_X_AVG -0.9532
-#define ACCEL_Y_AVG -0.0564
-#define ACCEL_Z_AVG -0.0374
-#define GYRO_X_AVG 0.8716
-#define GYRO_Y_AVG 1.4259
-#define GYRO_Z_AVG -1.6440
+
+#define ACCEL_X_AVG -0.9616
+#define ACCEL_Y_AVG -0.0555
+#define ACCEL_Z_AVG -0.0584
+#define GYRO_X_AVG 0.5768
+#define GYRO_Y_AVG 1.3094
+#define GYRO_Z_AVG -0.6862
 
 // --- Accelerometer offsets (units: g) - FINAL, real mounted position ---
 // Note: -X is the up axis here, so X_OFFSET = ax_avg - (-1.0), not ax_avg - 1.0
@@ -83,15 +84,28 @@ float Kp_pitch = 1.9;
 float Ki_pitch = 0.408;
 float Kd_pitch = 0.02;
 
-float Kp_yaw = -1.8;
-float Ki_yaw = -9;
-float Kd_yaw = 0.0005;
+float Kp_yaw = -2.2;
+float Ki_yaw = -16;
+float Kd_yaw = 0.0063;
 
 float pitchIntegral = 0, pitchLastError = 0;
 float yawIntegral = 0, yawLastError = 0;
 bool pitchSaturated = false, yawSaturated = false;
 
-#define INTEGRAL_LIMIT 60.0
+#define INTEGRAL_LIMIT 80.0
+
+// Soft deadband: below this error magnitude, contribute nothing (immune
+// to sensor noise, same as before). Above it, the error ramps up
+// CONTINUOUSLY from zero rather than jumping straight to its full raw
+// value - this removes the discontinuity a hard on/off gate creates
+// right at the threshold, which is what was causing the jitter loop.
+#define PITCH_DEADBAND 0.6
+#define YAW_DEADBAND 0.6
+
+float applyDeadband(float error, float deadband) {
+  if (fabs(error) <= deadband) return 0.0;
+  return error - deadband * (error > 0 ? 1.0 : -1.0);
+}
 
 float telemetry_pitch = 0, telemetry_yaw = 0;
 float telemetry_pitchCorrection = 0, telemetry_yawCorrection = 0;
@@ -254,8 +268,9 @@ void setup() {
 
 float computePID(float setpoint, float measured, float &integral,
                   float &lastError, float dt, float Kp, float Ki, float Kd,
-                  bool outputSaturated) {
-  float error = setpoint - measured;
+                  bool outputSaturated, float deadband) {
+  float rawError = setpoint - measured;
+  float error = applyDeadband(rawError, deadband);
 
   // Anti-windup: only accumulate integral if the output ISN'T already
   // saturated, or if this error would pull the output back INTO range.
@@ -293,7 +308,7 @@ void loop() {
   bool isStationary = (fabs(accelMagnitude - 1.0) < 0.05);
 
   if (isStationary) {
-    pitchAngle = 0.998 * (pitchAngle + gyroPitchRate * dt) + 0.002 * accelPitch;
+    pitchAngle = 0.9 * (pitchAngle + gyroPitchRate * dt) + 0.1 * accelPitch;
   } else {
     pitchAngle = pitchAngle + gyroPitchRate * dt;
   }
@@ -301,10 +316,12 @@ void loop() {
 
   float pitchCorrection = computePID(0, pitchAngle, pitchIntegral,
                                       pitchLastError, dt,
-                                      Kp_pitch, Ki_pitch, Kd_pitch, pitchSaturated);
+                                      Kp_pitch, Ki_pitch, Kd_pitch, pitchSaturated,
+                                      PITCH_DEADBAND);
   float yawCorrection = computePID(0, yawAngle, yawIntegral,
                                     yawLastError, dt,
-                                    Kp_yaw, Ki_yaw, Kd_yaw, yawSaturated);
+                                    Kp_yaw, Ki_yaw, Kd_yaw, yawSaturated,
+                                    YAW_DEADBAND);
 
   // Determine saturation BEFORE clamping, so next loop's anti-windup
   // check reflects whether we actually hit the limit this time.
@@ -314,6 +331,9 @@ void loop() {
   pitchCorrection = constrain(pitchCorrection, -GIMBAL_MAX_SAFE, GIMBAL_MAX_SAFE);
   yawCorrection   = constrain(yawCorrection,   -GIMBAL_MAX_SAFE, GIMBAL_MAX_SAFE);
 
+  // No gating needed here anymore - the soft deadband already makes
+  // correction ramp smoothly from zero, so it's always safe to apply
+  // directly to the servo angle every loop.
   float pitchServoAngle = SERVO_CENTER + (pitchCorrection * LINKAGE_RATIO);
   float yawServoAngle   = SERVO_CENTER + (yawCorrection   * LINKAGE_RATIO);
 
@@ -330,10 +350,12 @@ void loop() {
   telemetry_pitchServo = pitchServoAngle;
   telemetry_yawServo = yawServoAngle;
 
-  Serial.print("Pitch: "); Serial.print(pitchAngle);
-  Serial.print("  servo: "); Serial.print(pitchServoAngle);
-  Serial.print(" || Yaw: "); Serial.print(yawAngle);
-  Serial.print("  servo: "); Serial.println(yawServoAngle);
+  // Serial.print("Pitch: "); Serial.print(pitchAngle);
+  // Serial.print("  servo: "); Serial.print(pitchServoAngle);
+  // Serial.print(" || Yaw: "); Serial.print(yawAngle);
+  // Serial.print("  servo: "); Serial.println(yawServoAngle);
+  Serial.print("pitchAngle: "); Serial.print(pitchAngle, 3);
+  Serial.print("  accelPitch: "); Serial.println(accelPitch, 3);
 
   delay(20);
 }
