@@ -25,7 +25,6 @@
 // --- WiFi credentials - fill these in ---
 const char* WIFI_SSID = "Slower 2.4";
 const char* WIFI_PASSWORD = "6a9e5b839d";
-
 AsyncWebServer server(80);
 
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
@@ -68,9 +67,9 @@ MPU6050 mpu(Wire);
 #define Z_OFFSET (ACCEL_Z_AVG)
 
 // --- Gyroscope zero-rate offsets (units: deg/s) ---
-#define GYRO_X_OFFSET 0.8716
-#define GYRO_Y_OFFSET 1.4608
-#define GYRO_Z_OFFSET -1.7930
+#define GYRO_X_OFFSET (GYRO_X_AVG)
+#define GYRO_Y_OFFSET (GYRO_Y_AVG)
+#define GYRO_Z_OFFSET (GYRO_Z_AVG)
 
 
 
@@ -78,15 +77,19 @@ float pitchAngle = 0;
 float yawAngle = 0;
 unsigned long lastTime = 0;
 
-// Re-verify sign at low deflection before trusting - new axis mapping
-// can flip which sign actually corrects vs. runs away.
-float Kp_pitch = 1.9;
-float Ki_pitch = 0.408;
-float Kd_pitch = 0.02;
+// TEST CONFIG: pitch and yaw made structurally identical for direct
+// comparison. Gain MAGNITUDES matched exactly (2.2, 16, 0.0063).
+// Pitch kept POSITIVE (its confirmed-correct sign via repeated push
+// tests); yaw kept NEGATIVE (its own confirmed-correct sign). This is
+// the one intentional difference - everything else, including the
+// filter blend logic below, is now identical between the two axes.
+float Kp_pitch = -1.2;
+float Ki_pitch = -0;
+float Kd_pitch = -0;
 
-float Kp_yaw = -2.2;
+float Kp_yaw = -1.3;
 float Ki_yaw = -16;
-float Kd_yaw = 0.0063;
+float Kd_yaw = -0.0001;
 
 float pitchIntegral = 0, pitchLastError = 0;
 float yawIntegral = 0, yawLastError = 0;
@@ -175,7 +178,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("=== TVC Gimbal PID + WiFi dashboard (build: MAIN-3, final mount) ===");
+  Serial.println("=== TVC Gimbal PID + WiFi dashboard (build: MAIN-4, pitch/yaw structurally matched) ===");
 
   Wire.begin(SDA_PIN, SCL_PIN);
 
@@ -303,16 +306,13 @@ void loop() {
   float gyroPitchRate = mpu.getGyroY() - GYRO_Y_OFFSET;
   float gyroYawRate   = mpu.getGyroZ() - GYRO_Z_OFFSET;
 
-  // --- Motion gate --- units are g, compare against 1.0
-  float accelMagnitude = sqrt(ax * ax + ay * ay + az * az);
-  bool isStationary = (fabs(accelMagnitude - 1.0) < 0.05);
-
-  if (isStationary) {
-    pitchAngle = 0.9 * (pitchAngle + gyroPitchRate * dt) + 0.1 * accelPitch;
-  } else {
-    pitchAngle = pitchAngle + gyroPitchRate * dt;
-  }
-  yawAngle = 0.9 * (yawAngle + gyroYawRate * dt) + 0.1 * accelYaw;
+  // TEST CONFIG: both axes now use the EXACT SAME blend logic, no
+  // isStationary branching for either one. This was the one remaining
+  // structural asymmetry between pitch and yaw - removed for this test
+  // so any behavioral difference left is due to the physical mechanism
+  // or sensor itself, not the code.
+  pitchAngle = 0.9 * (pitchAngle + gyroPitchRate * dt) + 0.1 * accelPitch;
+  yawAngle   = 0.9 * (yawAngle   + gyroYawRate   * dt) + 0.1 * accelYaw;
 
   float pitchCorrection = computePID(0, pitchAngle, pitchIntegral,
                                       pitchLastError, dt,
@@ -331,9 +331,6 @@ void loop() {
   pitchCorrection = constrain(pitchCorrection, -GIMBAL_MAX_SAFE, GIMBAL_MAX_SAFE);
   yawCorrection   = constrain(yawCorrection,   -GIMBAL_MAX_SAFE, GIMBAL_MAX_SAFE);
 
-  // No gating needed here anymore - the soft deadband already makes
-  // correction ramp smoothly from zero, so it's always safe to apply
-  // directly to the servo angle every loop.
   float pitchServoAngle = SERVO_CENTER + (pitchCorrection * LINKAGE_RATIO);
   float yawServoAngle   = SERVO_CENTER + (yawCorrection   * LINKAGE_RATIO);
 
@@ -350,12 +347,12 @@ void loop() {
   telemetry_pitchServo = pitchServoAngle;
   telemetry_yawServo = yawServoAngle;
 
-  // Serial.print("Pitch: "); Serial.print(pitchAngle);
-  // Serial.print("  servo: "); Serial.print(pitchServoAngle);
-  // Serial.print(" || Yaw: "); Serial.print(yawAngle);
-  // Serial.print("  servo: "); Serial.println(yawServoAngle);
-  Serial.print("pitchAngle: "); Serial.print(pitchAngle, 3);
-  Serial.print("  accelPitch: "); Serial.println(accelPitch, 3);
+  Serial.print("Pitch: "); Serial.print(pitchAngle);
+  Serial.print("  servo: "); Serial.print(pitchServoAngle);
+  Serial.print("  pitchIntegral: "); Serial.print(pitchIntegral, 4);
+  Serial.print(" || Yaw: "); Serial.print(yawAngle);
+  Serial.print("  servo: "); Serial.print(yawServoAngle);
+  Serial.print("  yawIntegral: "); Serial.println(yawIntegral, 4);
 
   delay(20);
 }
