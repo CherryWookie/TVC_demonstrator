@@ -55,13 +55,13 @@ MPU6050 mpu(Wire);
 #define GYRO_Z_OFFSET (GYRO_Z_AVG)
 
 // --- Gains: confirmed-working values, live-tunable via dashboard ---
-float Kp_pitch = -1.3;
-float Ki_pitch = -0.10;
-float Kd_pitch = 0.00;
+float Kp_pitch = -0.8;
+float Ki_pitch = -7;
+float Kd_pitch = -0.0001;
 
-float Kp_yaw = -1.3;
+float Kp_yaw = -1;
 float Ki_yaw = -16.0;
-float Kd_yaw = -0.0003;
+float Kd_yaw = -0.001;
 
 #define PITCH_DEADBAND 0.5
 #define YAW_DEADBAND   0.5
